@@ -1,0 +1,28 @@
+# === CREDENCIALES: nunca subir ===
+config.json
+
+# datos de trabajo
+vendedores.json
+asignaciones.json
+errores_log.txt
+Resumenes/
+Historial/
+
+# reportes de prueba
+*.xls
+*.xlsx
+*.XLS
+*.XLSX
+*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# PyInstaller / Inno Setup
+build/
+dist/
+*.spec
+Instalador/

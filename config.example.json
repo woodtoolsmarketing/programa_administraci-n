@@ -1,0 +1,30 @@
+{
+  "_ayuda": "Copiar este archivo como config.json y completar. config.json NO se sube a git.",
+
+  "anthropic_api_key": "sk-ant-...",
+  "modelo_claude": "claude-opus-5",
+  "esfuerzo_claude": "high",
+  "usar_claude_en_excel": false,
+  "usar_claude_en_pdf": true,
+  "usar_claude_para_telefonos": true,
+
+  "whatsapp_token": "EAAG...",
+  "whatsapp_phone_number_id": "1041050652417644",
+  "whatsapp_version": "v21.0",
+  "modo_envio": "libre",
+  "plantilla_nombre": "",
+  "plantilla_idioma": "es",
+  "pausa_entre_envios_seg": 1.5,
+
+  "usar_fecha_reporte": true,
+  "dias_aviso_previo": 7,
+  "incluir_a_vencer": true,
+  "solo_resaltados": false,
+  "saldo_minimo": 0.0,
+  "area_telefono_defecto": "11",
+
+  "generar_pdf_por_vendedor": true,
+  "adjuntar_pdf_original": false,
+  "max_caracteres_mensaje": 3800,
+  "firma_mensaje": "Administracion Wood Tools"
+}

@@ -1,0 +1,22 @@
+# Gestor de Cobranzas Wood Tools
+# Instalar con:  pip install -r requirements.txt
+
+# --- API de Claude ---
+anthropic==0.121.0
+
+# --- lectura de Excel ---
+xlrd==2.0.2          # .xls viejo (BIFF) CON colores de relleno
+openpyxl==3.1.5      # .xlsx / .xlsm
+
+# --- lectura de PDF ---
+pdfplumber==0.11.10
+pypdf==6.14.2
+
+# --- generacion de PDF ---
+reportlab==5.0.0
+
+# --- WhatsApp Cloud API ---
+requests==2.32.5
+
+# tkinter viene con Python, no se instala por pip.
+# Para empaquetar el .exe:  pip install pyinstaller
