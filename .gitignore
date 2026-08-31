@@ -8,6 +8,8 @@ PerfilChrome/
 vendedores.json
 asignaciones.json
 errores_log.txt
+# el informe del diagnostico puede traer datos del chat
+DIAGNOSTICO_WHATSAPP_WEB.txt
 Resumenes/
 Historial/
 

@@ -1099,6 +1099,22 @@ def t_whatsapp_web() -> None:
     check("con una sola parte no dice 'Mensaje 1 de 1'",
           "de 1" not in solo_texto[0].descripcion, solo_texto[0].descripcion)
 
+    # --- que input sirve para un PDF (el bug del adjunto) -----------------
+    # WhatsApp Web arranca con UN input, el de fotos (accept="image/*"). Si se
+    # le pasa un PDF lo descarta sin avisar y el adjunto nunca aparece. El de
+    # documentos (accept="*") recien existe despues de apretar "Documento".
+    casos_accept = [
+        ("*", True), ("*/*", True), ("", True), (None, True),
+        ("application/pdf", True), (".pdf", True),
+        ("image/*", False), ("video/*", False), ("audio/*", False),
+        ("image/*,video/mp4", False),
+    ]
+    for acepta, esperado in casos_accept:
+        eq(f"accept={acepta!r} sirve para un PDF",
+           ww._acepta_documentos(acepta), esperado)
+    check("NUNCA se elige el input de fotos para mandar un PDF",
+          not ww._acepta_documentos("image/*"))
+
     # --- entorno ----------------------------------------------------------
     listo, motivo = ww.disponible()
     check("disponible() devuelve (bool, motivo) sin abrir nada",

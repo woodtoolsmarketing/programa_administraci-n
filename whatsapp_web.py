@@ -82,6 +82,20 @@ def _ruta_chrome() -> str:
     return ""
 
 
+def _acepta_documentos(acepta: str) -> bool:
+    """True si ese input[type=file] sirve para mandar un PDF.
+
+    El input de fotos declara accept="image/*": si se le pasa un PDF, WhatsApp
+    lo descarta sin decir nada. El de documentos declara accept="*".
+    """
+    a = (acepta or "").strip().lower()
+    if not a or a in ("*", "*/*", "*.*"):
+        return True
+    if "image" in a or "video" in a or "audio" in a:
+        return False
+    return "pdf" in a or "application" in a
+
+
 # ==========================================================================
 # SELECTORES (varios por elemento, porque WhatsApp Web los cambia)
 # ==========================================================================
@@ -113,10 +127,38 @@ def _selectores() -> dict[str, list[tuple[Any, str]]]:
         ],
         # el boton de adjuntar, por si hay que abrirlo para que aparezca el input
         "adjuntar": [
+            (By.CSS_SELECTOR, "button[title='Adjuntar']"),
+            (By.CSS_SELECTOR, "button[aria-label='Adjuntar']"),
+            (By.CSS_SELECTOR, "div[title='Adjuntar']"),
+            (By.CSS_SELECTOR, "button[title='Attach']"),
+            (By.CSS_SELECTOR, "button[aria-label='Attach']"),
+            (By.CSS_SELECTOR, "span[data-icon='ic-attach-file']"),
             (By.CSS_SELECTOR, "span[data-icon='plus-rounded']"),
             (By.CSS_SELECTOR, "span[data-icon='attach-menu-plus']"),
+            (By.CSS_SELECTOR, "span[data-icon='plus']"),
             (By.CSS_SELECTOR, "span[data-icon='clip']"),
-            (By.CSS_SELECTOR, "div[title='Adjuntar']"),
+            (By.CSS_SELECTOR, "span[data-icon='attach']"),
+        ],
+        # La opcion "Documento" del menu de adjuntar. Es la que importa: recien
+        # al apretarla WhatsApp crea el input[type=file] con accept="*". Antes
+        # de eso el unico input de la pagina es el de fotos (accept="image/*"),
+        # que descarta los PDF sin avisar.
+        "menu_documento": [
+            (By.CSS_SELECTOR, "button[role='menuitem'][aria-label='Documento']"),
+            (By.CSS_SELECTOR, "button[role='menuitem'][aria-label='Document']"),
+            (By.XPATH, "//*[@role='menuitem'][contains(@aria-label,'ocument')]"),
+            (By.XPATH, "//*[@role='menuitem'][contains(., 'ocument')]"),
+            (By.XPATH, "//*[normalize-space(text())='Documento']"),
+        ],
+        # Con el archivo ya cargado, la vista previa muestra estos controles.
+        # Sirven para confirmar que el adjunto entro de verdad: sin esto, un
+        # fallo silencioso terminaria mandando el texto sin el PDF.
+        "adjunto_listo": [
+            (By.CSS_SELECTOR, "[aria-label='Quitar archivo adjunto']"),
+            (By.CSS_SELECTOR, "[aria-label='Remove attachment']"),
+            (By.CSS_SELECTOR, "span[data-icon='wds-ic-send-filled']"),
+            (By.XPATH, "//*[contains(@aria-label,'Enviar')]"),
+            (By.XPATH, "//*[contains(@aria-label,'Send')]"),
         ],
         # la caja de epigrafe del documento adjunto (otra que la del chat)
         "caja_epigrafe": [
@@ -268,7 +310,11 @@ class Sesion:
         self, progreso: Callable[[str], None] | None = None, espera: int = ESPERA_QR
     ) -> None:
         """Espera a que la sesion este lista, dando tiempo a escanear el QR."""
-        if self._buscar("sesion_lista", espera=8) is not None:
+        # Restaurar una sesion guardada tarda entre 5 y 10 segundos. Si se
+        # pregunta antes, parece que no hay sesion y se le pide el QR a alguien
+        # que no lo necesita.
+        self._avisar(progreso, "Buscando la sesion guardada...")
+        if self._buscar("sesion_lista", espera=25) is not None:
             self._avisar(progreso, "Sesion de WhatsApp Web ya iniciada.")
             return
 
@@ -340,37 +386,101 @@ class Sesion:
                 f"{paso.ruta_pdf}"
             )
 
+        # No alcanza con que send_keys no falle: hay que ver el adjunto en la
+        # vista previa. Si no aparece, el texto se mandaria sin el PDF.
+        if self._buscar("adjunto_listo", espera=ESPERA_ELEMENTO) is None:
+            raise ErrorWhatsAppWeb(
+                "El PDF no llego a la vista previa de WhatsApp.\n\n"
+                f"Adjuntalo a mano desde:\n{paso.ruta_pdf}"
+            )
+
         if paso.epigrafe:
             self._escribir_epigrafe(paso.epigrafe)
         log(f"WhatsApp Web: PDF adjuntado para {paso.vendedor}")
 
     def _input_de_archivo(self) -> Any:
-        """El input[type=file] de documentos.
+        """El input[type=file] al que se le pasa la ruta del PDF.
 
-        WhatsApp Web deja varios inputs en el DOM (fotos, camara, documento).
-        El de documentos es el que acepta cualquier extension. Si no aparece
-        ninguno, se abre el menu de adjuntar y se busca de nuevo.
+        El camino, medido contra WhatsApp Web:
+
+          1. La pagina arranca con UN solo input, y es el de fotos
+             (accept="image/*"). Pasarle un PDF no da error: WhatsApp lo
+             descarta en silencio y el adjunto nunca aparece.
+          2. Hay que apretar "Adjuntar" con un click DE VERDAD. Los clicks
+             hechos por JavaScript no abren el menu.
+          3. Y despues apretar "Documento". Recien ahi WhatsApp agrega el
+             segundo input, con accept="*", que es el que sirve.
         """
-        from selenium.webdriver.common.by import By
+        entrada = self._input_documentos()
+        if entrada is not None:
+            return entrada
 
-        for _ in range(2):
-            entradas = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-            # primero el que acepta de todo; si no, el ultimo que haya
-            for entrada in entradas:
-                acepta = (entrada.get_attribute("accept") or "").strip()
-                if not acepta or "*" in acepta or "pdf" in acepta.lower():
-                    return entrada
-            if entradas:
-                return entradas[-1]
-            boton = self._buscar("adjuntar", espera=6)
-            if boton is None:
-                return None
-            try:
-                self.driver.execute_script("arguments[0].click();", boton)
-            except Exception:
+        boton = self._buscar("adjuntar", espera=8)
+        if boton is None:
+            log_error("WhatsApp Web: no se encontro el boton de adjuntar")
+            return None
+        # si el menu ya quedo abierto de antes, volver a apretar lo cerraria
+        if (boton.get_attribute("aria-expanded") or "").lower() != "true":
+            if not self._click_real(boton):
+                log_error("WhatsApp Web: no se pudo abrir el menu de adjuntar")
                 return None
             time.sleep(1.2)
+
+        opcion = self._buscar("menu_documento", espera=8)
+        if opcion is None:
+            log_error("WhatsApp Web: no aparecio la opcion 'Documento' del menu")
+            return None
+        if not self._click_real(opcion):
+            log_error("WhatsApp Web: no se pudo apretar 'Documento'")
+            return None
+
+        # el input tarda un momento en aparecer
+        for _ in range(12):
+            entrada = self._input_documentos()
+            if entrada is not None:
+                log("WhatsApp Web: input de documentos listo")
+                return entrada
+            time.sleep(0.5)
+        log_error("WhatsApp Web: 'Documento' no creo el input de archivos")
         return None
+
+    def _input_documentos(self) -> Any:
+        """El input que acepta documentos. NUNCA devuelve el de fotos."""
+        from selenium.webdriver.common.by import By
+
+        entradas = self.driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+        acepta_de = [(e, (e.get_attribute("accept") or "").strip()) for e in entradas]
+        if acepta_de:
+            log("WhatsApp Web: inputs presentes -> " + str([a for _, a in acepta_de]))
+        for entrada, acepta in acepta_de:
+            if _acepta_documentos(acepta):
+                return entrada
+        return None
+
+    def _click_real(self, elemento: Any) -> bool:
+        """Click de verdad. WhatsApp Web ignora los clicks hechos por JavaScript."""
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        try:
+            self.driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", elemento
+            )
+        except Exception:
+            pass
+        for estrategia in ("directo", "acciones", "javascript"):
+            try:
+                if estrategia == "directo":
+                    elemento.click()
+                elif estrategia == "acciones":
+                    ActionChains(self.driver).move_to_element(elemento).pause(
+                        0.3
+                    ).click().perform()
+                else:
+                    self.driver.execute_script("arguments[0].click();", elemento)
+                return True
+            except Exception as e:
+                log(f"WhatsApp Web: click {estrategia} fallo: {str(e)[:110]}")
+        return False
 
     def _escribir_epigrafe(self, epigrafe: str) -> None:
         """Escribe el epigrafe del documento. Si falla, no se corta el envio."""
@@ -394,13 +504,24 @@ class Sesion:
 
     # ---------------- cierre ----------------
     def cerrar(self) -> None:
-        if self.driver is not None:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
-            self.driver = None
-            log("WhatsApp Web: navegador cerrado")
+        """Cierra Chrome dandole tiempo a guardar la sesion.
+
+        WhatsApp guarda las claves de la sesion en IndexedDB. Matar el navegador
+        de golpe puede dejar esa escritura a medias, y entonces la proxima vez
+        vuelve a pedir el QR. Un respiro antes de cerrar lo evita.
+        """
+        if self.driver is None:
+            return
+        try:
+            time.sleep(2.5)
+        except Exception:
+            pass
+        try:
+            self.driver.quit()
+        except Exception:
+            pass
+        self.driver = None
+        log("WhatsApp Web: navegador cerrado")
 
     # ---------------- auxiliares ----------------
     def _buscar(self, clave: str, espera: int) -> Any:
