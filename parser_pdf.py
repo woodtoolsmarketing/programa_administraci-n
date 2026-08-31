@@ -225,11 +225,18 @@ _RE_LOCALIDAD_INLINE = re.compile(r"\(\s*\d{3,5}\s*\)")
 _RE_TRAMO_TELEFONOS = re.compile(r"(?<![\d/])\d[\d\s.\-]{6,}")
 # Nombre de contacto pegado justo antes del numero ("CAPITAL FEDERAL Marcos").
 _RE_NOMBRE_PEGADO = re.compile(r"\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})\s*$")
+# Corte de columna del ERP: dos o mas espacios seguidos.
+_RE_COLUMNA = re.compile(r"\s{2,}")
+# Condicion de venta, que viene como una letra sola entre la razon social y los
+# telefonos ("TORNILLERIA SUR SA        B  4712-3456").
+_RE_CONDVTA_SUELTA = re.compile(r"^[A-Z]\b\s*")
+# "Fecha:" / "Hoja:" pegados al nombre de la empresa en la primera linea.
+_RE_COLA_CABECERA = re.compile(r"\s+(fecha|hoja|pagina)\s*:.*$", re.IGNORECASE)
 # Importes al final de la fila "Total cliente" ("... SRL  57.165,39 52.165,39").
 _RE_COLA_IMPORTES = re.compile(r"(?:\s+-?\(?\$?[\d.]+,\d{2}\)?-?)+\s*$")
 _RE_TIPO_COMPROBANTE = re.compile(
     r"\b(FE?\s?[ABCEM]|FAC?\s?[ABCEM]|N[CD]\s?[ABCEM]|REC|TIC?\s?[ABC]|"
-    r"FCE\s?[ABC]|LIQ)\b",
+    r"FCE\s?[ABC]|LIQ|PRES)\b",
     re.IGNORECASE,
 )
 _RE_NUMEROS_EN_LINEA = re.compile(r"-?\(?\$?\s*[\d\.]*\d(?:,\d+)?\)?-?")
@@ -319,7 +326,11 @@ def parsear_pdf(ruta: str, area_telefono_defecto: str = "11") -> Reporte:
     # --- cabecera del reporte ---
     for linea in lineas[:40]:
         if not reporte.empresa and not _es_ruido(linea):
-            reporte.empresa = linea.strip()
+            # La primera linea trae el nombre de la empresa y, pegados a la
+            # derecha, "Fecha:" y "Hoja:". Sin sacarlos, ese texto entero
+            # termina en el encabezado y el pie del PDF que recibe el vendedor.
+            empresa = _RE_COLUMNA.split(linea.strip(), 1)[0]
+            reporte.empresa = _RE_COLA_CABECERA.sub("", empresa).strip()
         if not reporte.titulo and sin_acentos(linea).upper().strip().startswith("A COBRAR"):
             reporte.titulo = linea.strip()
         m = _RE_FECHA_REPORTE.search(linea)
@@ -654,34 +665,56 @@ def _partir_cabecera_cliente(resto: str) -> tuple[str, str, str]:
         return "", "", ""
 
     m_loc = _RE_LOCALIDAD_INLINE.search(texto)
-    if m_loc:
+    hay_localidad = m_loc is not None
+    if hay_localidad:
         razon = texto[: m_loc.start()].strip()
-        cola = texto[m_loc.start():].strip()
+        extra = texto[m_loc.start():].strip()
     else:
-        razon, cola = texto, ""
+        # Sin localidad en el renglon, el corte de columna del ERP son dos o
+        # mas espacios seguidos. Solo se corta si lo que sigue trae numeros o
+        # es una letra sola (la condicion de venta): un nombre con espacios de
+        # mas no se debe partir.
+        partes = _RE_COLUMNA.split(texto, 1)
+        cola = partes[1].strip() if len(partes) > 1 else ""
+        if cola and (any(ch.isdigit() for ch in cola) or len(cola) == 1):
+            razon, extra = partes[0].strip(), cola
+        else:
+            razon, extra = texto, ""
 
-    # El tramo de telefonos arranca en la primera secuencia larga de digitos,
-    # pero solo se corta si de ahi sale al menos un numero valido: asi una
-    # razon social con numeros ("FERRETERIA 2000 SA") no se rompe.
-    fuente = cola if cola else razon
+    localidad = ""
     telefonos = ""
+    # Donde buscar los telefonos: en la cola si el ERP separo columnas, o en la
+    # propia razon social si no lo hizo. Solo se corta si de ahi sale al menos
+    # un numero valido, asi un nombre como "FERRETERIA 2000 SA" no se rompe.
+    fuente = extra if extra else razon
     m_tel = _RE_TRAMO_TELEFONOS.search(fuente)
     if m_tel and telefonos_de_texto(fuente[m_tel.start():]):
         telefonos = fuente[m_tel.start():].strip()
         cabeza = fuente[: m_tel.start()]
-        if cola:
-            # Un nombre de contacto pegado al numero. Solo se busca despues de
-            # la localidad, que el ERP imprime en mayusculas: dentro de la
-            # razon social una palabra en Titulo bien puede ser un apellido.
+        if hay_localidad:
+            # Un nombre de contacto pegado al numero ("CAPITAL FEDERAL Marcos").
             m_nombre = _RE_NOMBRE_PEGADO.search(cabeza)
             if m_nombre:
                 telefonos = f"{m_nombre.group(1)} {telefonos}".strip()
                 cabeza = cabeza[: m_nombre.start()]
-            cola = cabeza
+            localidad = cabeza
+        elif extra:
+            # Antes del numero pueden venir la condicion de venta (una letra
+            # sola, que se descarta) y el nombre del contacto, que viaja con
+            # los telefonos igual que en la columna del Excel.
+            contacto = _RE_CONDVTA_SUELTA.sub("", cabeza.strip()).strip()
+            if contacto:
+                telefonos = f"{contacto} {telefonos}".strip()
         else:
             razon = cabeza
+    elif hay_localidad:
+        localidad = extra
+    elif extra:
+        # No habia telefonos: esa cola no era otra columna sino parte del
+        # nombre. Se devuelve el texto entero para no perder nada.
+        razon = texto
 
-    return razon.strip(), cola.strip(), telefonos.strip()
+    return razon.strip(), localidad.strip(), telefonos.strip()
 
 
 def _separar_telefonos_de_razon(cliente: Cliente, area: str) -> None:
