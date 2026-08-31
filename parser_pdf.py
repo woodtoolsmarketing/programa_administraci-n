@@ -216,6 +216,17 @@ _RE_TOTAL_CLIENTE = re.compile(
 )
 _RE_TOTAL_GENERAL = re.compile(r"total\s+general\s*:?", re.IGNORECASE)
 _RE_LOCALIDAD = re.compile(r"\(\s*(\d{3,5})\s*\)\s*(.+?)\s*$")
+# La localidad en cualquier parte de la linea: sirve de ancla para separar la
+# razon social de lo que viene despues, porque el ERP siempre la imprime como
+# "(codigo postal) NOMBRE".
+_RE_LOCALIDAD_INLINE = re.compile(r"\(\s*\d{3,5}\s*\)")
+# Arranque de un tramo de telefonos: 7 caracteres o mas de digitos, espacios,
+# puntos y guiones. El look-behind evita cortar adentro de una fecha.
+_RE_TRAMO_TELEFONOS = re.compile(r"(?<![\d/])\d[\d\s.\-]{6,}")
+# Nombre de contacto pegado justo antes del numero ("CAPITAL FEDERAL Marcos").
+_RE_NOMBRE_PEGADO = re.compile(r"\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})\s*$")
+# Importes al final de la fila "Total cliente" ("... SRL  57.165,39 52.165,39").
+_RE_COLA_IMPORTES = re.compile(r"(?:\s+-?\(?\$?[\d.]+,\d{2}\)?-?)+\s*$")
 _RE_TIPO_COMPROBANTE = re.compile(
     r"\b(FE?\s?[ABCEM]|FAC?\s?[ABCEM]|N[CD]\s?[ABCEM]|REC|TIC?\s?[ABC]|"
     r"FCE\s?[ABC]|LIQ)\b",
@@ -366,7 +377,10 @@ def parsear_pdf(ruta: str, area_telefono_defecto: str = "11") -> Reporte:
             if actual is None:
                 actual = Cliente(
                     codigo=m_total.group(1),
-                    razon_social=(m_total.group(2) or "").strip(),
+                    # sin los importes, que en el PDF quedan pegados al nombre
+                    razon_social=_RE_COLA_IMPORTES.sub(
+                        "", m_total.group(2) or ""
+                    ).strip(),
                 )
                 reporte.avisos.append(
                     f"Cliente {m_total.group(1)}: se encontro el total sin haber "
@@ -400,8 +414,16 @@ def parsear_pdf(ruta: str, area_telefono_defecto: str = "11") -> Reporte:
         ):
             codigo, resto = m_cab.group(1), m_cab.group(2).strip()
             cerrar()
-            actual = Cliente(codigo=codigo, razon_social=resto)
-            # Si en la misma linea hay telefonos, los separamos despues
+            # En el PDF no hay columnas: la razon social, la localidad y los
+            # telefonos vienen pegados en el mismo renglon y hay que separarlos
+            # aca, o el nombre del cliente llega asi al WhatsApp del vendedor.
+            razon, localidad, telefonos = _partir_cabecera_cliente(resto)
+            actual = Cliente(
+                codigo=codigo,
+                razon_social=razon,
+                localidad=localidad,
+                telefonos_raw=telefonos,
+            )
             info_pendiente = []
             vio_comprobante = False
             continue
@@ -611,19 +633,71 @@ def _completar_info(cliente: Cliente, lineas: list[str], area: str) -> None:
     cliente.telefonos = telefonos_de_texto(cliente.telefonos_raw, area)
 
 
+def _partir_cabecera_cliente(resto: str) -> tuple[str, str, str]:
+    """Separa la linea de cabecera del cliente en sus tres datos.
+
+    En el PDF no hay columnas de verdad: la razon social, la localidad y los
+    telefonos quedan en un solo renglon, por ejemplo
+
+        ACME HERRAMIENTAS SRL (1047) CAPITAL FEDERAL Marcos 11 3900 9488
+
+    La localidad es el ancla confiable, porque el ERP siempre la imprime como
+    "(codigo postal) NOMBRE". Si no esta, se corta en el primer tramo que
+    parezca un telefono.
+
+    Devuelve (razon_social, localidad, telefonos_raw); lo que no se puede
+    identificar vuelve como cadena vacia. Es idempotente: volver a pasarle su
+    propia salida no cambia el resultado.
+    """
+    texto = (resto or "").strip()
+    if not texto:
+        return "", "", ""
+
+    m_loc = _RE_LOCALIDAD_INLINE.search(texto)
+    if m_loc:
+        razon = texto[: m_loc.start()].strip()
+        cola = texto[m_loc.start():].strip()
+    else:
+        razon, cola = texto, ""
+
+    # El tramo de telefonos arranca en la primera secuencia larga de digitos,
+    # pero solo se corta si de ahi sale al menos un numero valido: asi una
+    # razon social con numeros ("FERRETERIA 2000 SA") no se rompe.
+    fuente = cola if cola else razon
+    telefonos = ""
+    m_tel = _RE_TRAMO_TELEFONOS.search(fuente)
+    if m_tel and telefonos_de_texto(fuente[m_tel.start():]):
+        telefonos = fuente[m_tel.start():].strip()
+        cabeza = fuente[: m_tel.start()]
+        if cola:
+            # Un nombre de contacto pegado al numero. Solo se busca despues de
+            # la localidad, que el ERP imprime en mayusculas: dentro de la
+            # razon social una palabra en Titulo bien puede ser un apellido.
+            m_nombre = _RE_NOMBRE_PEGADO.search(cabeza)
+            if m_nombre:
+                telefonos = f"{m_nombre.group(1)} {telefonos}".strip()
+                cabeza = cabeza[: m_nombre.start()]
+            cola = cabeza
+        else:
+            razon = cabeza
+
+    return razon.strip(), cola.strip(), telefonos.strip()
+
+
 def _separar_telefonos_de_razon(cliente: Cliente, area: str) -> None:
-    """En el PDF la razon social puede venir con los telefonos pegados al final."""
-    razon = cliente.razon_social or ""
-    if not razon:
-        return
-    # Buscamos un tramo final con pinta de telefonos
-    m = re.search(r"\s{2,}([\d\s\-/().]{7,}.*)$", razon)
-    if not m:
-        return
-    cola = m.group(1).strip()
-    if telefonos_de_texto(cola, area):
-        cliente.razon_social = razon[: m.start()].strip()
+    """Repaso final por si la razon social todavia arrastra localidad o telefonos.
+
+    La cabecera ya se separa al leerla; esto cubre a los clientes que se
+    reconstruyeron desde la fila "Total cliente" porque no se reconocio su
+    cabecera.
+    """
+    razon, localidad, telefonos = _partir_cabecera_cliente(cliente.razon_social)
+    if razon:
+        cliente.razon_social = razon
+    if localidad and not cliente.localidad:
+        cliente.localidad = localidad
+    if telefonos:
         cliente.telefonos_raw = " / ".join(
-            x for x in ([cliente.telefonos_raw, cola]) if x
+            x for x in (cliente.telefonos_raw, telefonos) if x
         ).strip(" /")
-        cliente.telefonos = telefonos_de_texto(cliente.telefonos_raw, area)
+    cliente.telefonos = telefonos_de_texto(cliente.telefonos_raw, area)

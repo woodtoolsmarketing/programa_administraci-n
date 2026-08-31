@@ -436,8 +436,19 @@ class App(tk.Tk):
             )
         )
         ttk.Label(arriba, textvariable=self.var_aviso_envio, style="Sub.TLabel").pack(
-            anchor="w", pady=(2, 8)
+            anchor="w", pady=(2, 2)
         )
+        # Los destinatarios salen de los clientes FILTRADOS en la pestana 2, asi
+        # que un filtro olvidado deja plata afuera sin que se note. Este cartel
+        # dice cuanta.
+        self.var_filtros_envio = tk.StringVar(value="")
+        ttk.Label(
+            arriba,
+            textvariable=self.var_filtros_envio,
+            style="Rojo.TLabel",
+            justify="left",
+            wraplength=980,
+        ).pack(anchor="w", pady=(0, 8))
 
         cuerpo = ttk.Frame(t)
         cuerpo.pack(fill="both", expand=True)
@@ -1124,6 +1135,10 @@ class App(tk.Tk):
             f"total {formatear_pesos(total)}"
         )
         self._refrescar_combo_vendedores()
+        # La pestana de envio usa esta misma lista filtrada: si cambia el filtro,
+        # tiene que cambiar el aviso de lo que queda afuera.
+        if hasattr(self, "tabla_envio"):
+            self._refrescar_envio()
 
     def _ordenar_por(self, columna: str) -> None:
         """Ordena la tabla por la columna clickeada."""
@@ -1430,6 +1445,58 @@ class App(tk.Tk):
                 ),
             )
         self._actualizar_aviso_envio()
+        self._actualizar_aviso_filtros()
+
+    def _clientes_excluidos(self) -> tuple[list[Cliente], float]:
+        """Clientes del reporte que los filtros dejan afuera del envio."""
+        if self.reporte is None:
+            return [], 0.0
+        incluidos = {id(c) for c in self._clientes_filtrados()}
+        fuera = [c for c in self.reporte.clientes if id(c) not in incluidos]
+        return fuera, round(sum(c.saldo_total for c in fuera), 2)
+
+    def _filtros_activos(self) -> list[str]:
+        """Los filtros de la pestana Clientes que hoy estan recortando la lista."""
+        activos: list[str] = []
+        if not self.var_f_vencidos.get():
+            activos.append("'Vencidos' destildado")
+        if not self.var_f_avencer.get():
+            activos.append("'A vencer' destildado")
+        try:
+            dias = int(self.var_f_dias.get() or 0)
+        except ValueError:
+            dias = 0
+        if dias > 0:
+            activos.append(f"a vencer dentro de {dias} dias")
+        try:
+            minimo = float(str(self.var_f_saldo_min.get()).replace(",", ".") or 0)
+        except ValueError:
+            minimo = 0.0
+        if minimo > 0:
+            activos.append(f"saldo minimo {formatear_pesos(minimo)}")
+        if self.var_f_resaltados.get():
+            activos.append("solo los marcados en amarillo")
+        if self.var_f_sin_vendedor.get():
+            activos.append("solo sin vendedor asignado")
+        if self.var_f_buscar.get().strip():
+            activos.append(f"busqueda '{self.var_f_buscar.get().strip()}'")
+        return activos
+
+    def _actualizar_aviso_filtros(self) -> None:
+        """Avisa arriba de los destinatarios cuanta plata dejan afuera los filtros."""
+        fuera, monto = self._clientes_excluidos()
+        if not fuera:
+            self.var_filtros_envio.set("")
+            return
+        motivos = self._filtros_activos()
+        texto = (
+            f"ATENCION: los filtros de la pestana 'Clientes' dejan afuera "
+            f"{len(fuera)} cliente{'s' if len(fuera) != 1 else ''} por "
+            f"{formatear_pesos(monto)}. Eso NO se va a enviar."
+        )
+        if motivos:
+            texto += f"   Filtros activos: {', '.join(motivos)}."
+        self.var_filtros_envio.set(texto)
 
     def _actualizar_aviso_envio(self) -> None:
         modo = self.var_w_modo.get() or str(CONFIG.get("modo_envio", "libre"))
@@ -1646,9 +1713,23 @@ class App(tk.Tk):
             f"{formatear_pesos(round(sum(c.saldo_total for c in cs), 2))}"
             for v, cs in destinos
         )
+        # Segunda barrera: los destinatarios salen de la lista FILTRADA, asi que
+        # antes de mandar hay que decir en la cara cuanto queda afuera.
+        fuera, monto_fuera = self._clientes_excluidos()
+        aviso_filtros = ""
+        if fuera:
+            motivos = self._filtros_activos()
+            aviso_filtros = (
+                f"\nOJO: los filtros de la pestana 'Clientes' dejan afuera "
+                f"{len(fuera)} cliente{'s' if len(fuera) != 1 else ''} por "
+                f"{formatear_pesos(monto_fuera)}, que NO se van a enviar.\n"
+                + (f"Filtros activos: {', '.join(motivos)}.\n" if motivos else "")
+            )
+
         if not messagebox.askyesno(
             "Confirmar envio",
-            f"Se va a enviar el resumen por WhatsApp a:\n\n{detalle}\n\n"
+            f"Se va a enviar el resumen por WhatsApp a:\n\n{detalle}\n"
+            f"{aviso_filtros}\n"
             "Confirmas el envio?",
         ):
             return
