@@ -71,9 +71,14 @@ mandar y:
 - **Vista previa** — ves el mensaje exacto, ya partido en la cantidad de
   mensajes de WhatsApp que va a ocupar.
 - **Generar solo el PDF** — deja los PDF en la carpeta `Resumenes\`.
-- **ENVIAR POR WHATSAPP** — sube el PDF, lo manda y después manda el texto.
-- **Abrir en WhatsApp Web** — plan B: abre el chat con el texto ya cargado para
-  mandarlo a mano.
+- **ENVIAR POR WHATSAPP WEB** — el camino recomendado. Abre Chrome con tu
+  WhatsApp (el de escanear el QR) y va vendedor por vendedor: abre el chat,
+  deja el mensaje escrito y el PDF adjunto, y **se detiene**. Vos revisás y
+  apretás Enviar. Con 5 vendedores son 10 clics (PDF + texto de cada uno).
+- **Enviar por la API de Meta** — el otro camino, con token de WhatsApp
+  Business. Manda solo, sin intervención, pero tiene la ventana de 24 horas.
+- **Abrir un chat en el navegador** — abre un solo chat con el texto ya
+  cargado, sin adjuntar nada.
 
 Cada vendedor recibe **un PDF con solo sus clientes**, no la cartera completa.
 
@@ -115,6 +120,37 @@ controlan contra la fila `Total cliente` y el `Total general` del propio reporte
 y los días de vencimiento se recalculan desde las fechas. Si Claude informa un
 número de días que contradice las fechas, **gana la fecha** y queda anotado en los
 avisos.
+
+### WhatsApp Web (el de escanear el QR) — recomendado
+
+No hay nada que configurar: ni token, ni número de empresa, ni plantillas. La
+primera vez que apretás **ENVIAR POR WHATSAPP WEB** se abre Chrome, escaneás el
+QR desde el teléfono (*WhatsApp → Dispositivos vinculados → Vincular un
+dispositivo*) y listo. La sesión queda guardada en la carpeta `PerfilChrome\`,
+al lado del programa, así que **el QR se escanea una sola vez**.
+
+Ventajas sobre la API de Meta:
+
+- **No existe la ventana de 24 horas.** Le podés escribir a cualquier vendedor
+  cuando quieras, sin que te haya escrito antes.
+- No se paga por conversación ni hay plantillas que hacer aprobar.
+- El mensaje sale con saltos de línea y negritas, bien formateado.
+
+> ### ⚠️ Por qué el envío es asistido y no automático
+>
+> El programa deja cada mensaje listo, pero **el botón Enviar lo apretás vos**.
+> No es una limitación técnica: automatizar el envío va contra los términos de
+> servicio de WhatsApp y el riesgo real es que **te bloqueen el número de la
+> empresa**. Preparar el mensaje ahorra todo el trabajo pesado; apretar Enviar
+> lleva un segundo y te deja revisar antes de mandar.
+>
+> Tené en cuenta también que WhatsApp Web cambia su HTML cada tanto y eso puede
+> romper la automatización. Cuando pasa, el programa te dice en qué paso se
+> cortó para que puedas terminarlo a mano.
+
+> **La carpeta `PerfilChrome\` no se sube a git.** Contiene la sesión iniciada
+> de WhatsApp: subirla sería entregarle el WhatsApp de la empresa a cualquiera
+> que clone el repositorio.
 
 ### WhatsApp Cloud API (Meta)
 Se necesitan dos datos de [Meta for Developers](https://developers.facebook.com):
@@ -243,6 +279,7 @@ de totales lo detecta y avisa. **Para PDF, el camino recomendado es Claude.**
 | `parser_pdf.py` | Extracción de texto de PDF y parseo best-effort. |
 | `claude_api.py` | API de Claude: interpretación, auditoría, teléfonos y redacción. |
 | `whatsapp.py` | Cloud API de Meta, con los errores traducidos al castellano. |
+| `whatsapp_web.py` | Envío asistido por WhatsApp Web (QR), con Selenium. Prepara el mensaje; nunca lo envía solo. |
 | `mensajes.py` | Armado y partido del texto del WhatsApp. |
 | `pdf_resumen.py` | PDF del resumen por vendedor (reportlab). |
 | `vendedores.py` | Vendedores y asignación de clientes. |

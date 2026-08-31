@@ -2,6 +2,9 @@
 config.json
 
 # datos de trabajo
+# PerfilChrome guarda la SESION INICIADA de WhatsApp Web: subirla seria
+# entregarle el WhatsApp de la empresa a cualquiera que clone el repo.
+PerfilChrome/
 vendedores.json
 asignaciones.json
 errores_log.txt

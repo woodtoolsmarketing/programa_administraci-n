@@ -443,12 +443,29 @@ def t_parser_pdf() -> None:
 
     rep = parser_pdf.parsear_pdf(RUTA_PDF, "11")
     eq("fecha del reporte", rep.fecha_reporte, FECHA_REPORTE)
+    eq("empresa sin la 'Fecha:' pegada al nombre", rep.empresa, "WOOD TOOLS SRL")
     eq("cantidad de clientes", len(rep.clientes), 3)
     eq("total general", rep.total_general_saldo, 157165.89, tol=0.005)
     eq("suma calculada", rep.saldo_total, 157165.89, tol=0.005)
     eq("descuadre general", rep.descuadre_general(), 0.0, tol=0.005)
     problemas = rep.validar()
     check("validar() sin problemas", not problemas, "; ".join(problemas[:4]))
+    print("  -- tipos de comprobante --")
+    linea_fe = ("71 FE A 00072592 Cond.15 Dias 18/08/2026 02/09/2026 01/01 "
+                "163372,51 163372,41 -2")
+    linea_pres = ("56 PRES 00154758 Cond.15 Dias 03/08/2026 18/08/2026 01/01 "
+                  "57093,30 27093,30 13")
+    check("reconoce 'FE A'", parser_pdf._parece_comprobante(linea_fe))
+    check("reconoce 'PRES' (el tipo del listado de vencimientos)",
+          parser_pdf._parece_comprobante(linea_pres))
+    comp = parser_pdf._armar_comprobante(linea_pres, None)
+    eq("PRES: tipo", comp.tipo, "PRES")
+    eq("PRES: importe original", comp.importe_original, 57093.30, tol=0.005)
+    eq("PRES: saldo parcial", comp.saldo, 27093.30, tol=0.005)
+    eq("PRES: dias", comp.dias_venc, 13)
+    check("no confunde una linea cualquiera con un comprobante",
+          not parser_pdf._parece_comprobante("CALLE FALSA 123"))
+
     print("  -- _partir_cabecera_cliente (separacion de la linea de cabecera) --")
     casos_cab = [
         ("ACME HERRAMIENTAS SRL (1047) CAPITAL FEDERAL Marcos 11 3900 9488 -4313 0466",
@@ -464,9 +481,18 @@ def t_parser_pdf() -> None:
          ("TALLER LOPEZ SA", "", "11 4085 5781")),
         # sin localidad ni telefonos: queda tal cual
         ("EST.CENTRAL S.A.C.I.F.I.Y.A.", ("EST.CENTRAL S.A.C.I.F.I.Y.A.", "", "")),
+        # la localidad va en el renglon de abajo y el ERP separa columnas con
+        # dos o mas espacios: contacto y telefonos quedan a la derecha
+        ("METALURGICA DEL OESTE S.A.        Santiago 1145678901 dueno",
+         ("METALURGICA DEL OESTE S.A.", "", "Santiago 1145678901 dueno")),
+        # ademas con la condicion de venta suelta, que se descarta
+        ("TORNILLERIA SUR S.A.I.C.        B  4712-3456 cel:1155667788",
+         ("TORNILLERIA SUR S.A.I.C.", "", "4712-3456 cel:1155667788")),
         # NO ROMPER: numeros que son parte del nombre
         ("FERRETERIA 2000 SA", ("FERRETERIA 2000 SA", "", "")),
         ("HIERROS 3 DE FEBRERO SRL", ("HIERROS 3 DE FEBRERO SRL", "", "")),
+        # espacios de mas dentro del nombre: no es una columna, no se corta
+        ("CASA GRANDE   2000", ("CASA GRANDE   2000", "", "")),
     ]
     for entrada, esperado in casos_cab:
         eq(f"cabecera: {entrada[:34]}...",
@@ -1027,6 +1053,81 @@ def t_claude() -> None:
     eq("beta de fallbacks", claude_api.BETA_FALLBACK, "server-side-fallback-2026-07-01")
 
 
+
+# ==========================================================================
+# 8b. WHATSAPP WEB ASISTIDO (sin abrir el navegador)
+# ==========================================================================
+def t_whatsapp_web() -> None:
+    _io = io
+    grupo("8b. whatsapp_web.py  (envio asistido, sin abrir Chrome)")
+
+    import whatsapp_web as ww
+
+    # --- URL del chat -----------------------------------------------------
+    eq("url_chat solo con el telefono",
+       ww.url_chat("5491139009488"),
+       "https://web.whatsapp.com/send?phone=5491139009488")
+    eq("url_chat limpia lo que no sea digito",
+       ww.url_chat("+54 9 11 3900-9488"),
+       "https://web.whatsapp.com/send?phone=5491139009488")
+    url = ww.url_chat("5491139009488", "hola *mundo*\nsegunda linea")
+    check("el texto viaja codificado en la URL", "&text=" in url and "%0A" in url, url)
+    check("no se escapa el chat de otro numero", url.count("phone=") == 1)
+    # el salto de linea por URL es clave: en WhatsApp Web, Enter ENVIA
+    check("los saltos de linea no se tipean, van en la URL",
+          "\n" not in url)
+
+    # --- cola de pasos ----------------------------------------------------
+    pasos = ww.armar_pasos("Juan Perez (002)", "5491139009488",
+                           ["parte uno", "parte dos"],
+                           ruta_pdf="C:/tmp/Resumen.pdf", epigrafe="epi")
+    eq("un paso por PDF mas uno por parte de texto", len(pasos), 3)
+    eq("primero el documento", pasos[0].tipo, "documento")
+    eq("despues los textos", [p.tipo for p in pasos[1:]], ["texto", "texto"])
+    eq("el PDF lleva su epigrafe", pasos[0].epigrafe, "epi")
+    check("las partes van numeradas para el usuario",
+          "Mensaje 1 de 2" in pasos[1].descripcion
+          and "Mensaje 2 de 2" in pasos[2].descripcion,
+          f"{pasos[1].descripcion} | {pasos[2].descripcion}")
+    check("todos los pasos saben a quien van",
+          all(p.telefono == "5491139009488" and p.vendedor == "Juan Perez (002)"
+              for p in pasos))
+
+    solo_texto = ww.armar_pasos("Ana Gomez (005)", "5491140647300", ["unico"])
+    eq("sin PDF, un solo paso", len(solo_texto), 1)
+    eq("y es de texto", solo_texto[0].tipo, "texto")
+    check("con una sola parte no dice 'Mensaje 1 de 1'",
+          "de 1" not in solo_texto[0].descripcion, solo_texto[0].descripcion)
+
+    # --- entorno ----------------------------------------------------------
+    listo, motivo = ww.disponible()
+    check("disponible() devuelve (bool, motivo) sin abrir nada",
+          isinstance(listo, bool) and isinstance(motivo, str))
+    if listo:
+        check("en esta PC estan selenium y Chrome", True)
+    else:
+        print(f"        (no disponible aca: {motivo.splitlines()[0]})")
+
+    # --- la sesion no hace nada peligroso sin navegador --------------------
+    sesion = ww.Sesion()
+    eq("arranca sin navegador", sesion.driver, None)
+    try:
+        sesion.preparar(pasos[0])
+        check("preparar() sin navegador tiene que fallar", False)
+    except ww.ErrorWhatsAppWeb as e:
+        check("preparar() sin navegador avisa claro", "no esta abierto" in str(e), str(e))
+
+    check("el perfil de Chrome vive al lado del programa",
+          ww.CARPETA_PERFIL.endswith("PerfilChrome"), ww.CARPETA_PERFIL)
+    check("la sesion guardada esta en .gitignore",
+          "PerfilChrome" in _io.open(os.path.join(PROYECTO, ".gitignore"),
+                                     encoding="utf-8").read())
+
+    # --- no existe ninguna funcion que apriete Enviar sola -----------------
+    fuente = _io.open(os.path.join(PROYECTO, "whatsapp_web.py"), encoding="utf-8").read()
+    check("el modulo NO manda solo: nada de click en el boton de enviar",
+          "send-button" not in fuente and "data-icon='send'" not in fuente)
+
 # ==========================================================================
 # 9. INTERFAZ (smoke test real de Tkinter, sin mainloop)
 # ==========================================================================
@@ -1056,6 +1157,14 @@ def t_interfaz() -> None:
         app.update()
         check("la ventana arranca", app.winfo_exists() == 1)
         eq("5 pestanas", len(app.libreta.tabs()), 5)
+        check("esta el boton de WhatsApp Web asistido", hasattr(app, "btn_wa_web"))
+        check("ese boton se bloquea mientras hay una operacion en curso",
+              app.btn_wa_web in (app.btn_leer, app.btn_claude, app.btn_verificar,
+                                 app.btn_telefonos, app.btn_enviar, app.btn_wa_web))
+        app._bloquear_botones(True)
+        eq("bloqueado", str(app.btn_wa_web.cget("state")), "disabled")
+        app._bloquear_botones(False)
+        eq("desbloqueado", str(app.btn_wa_web.cget("state")), "normal")
 
         rep = parser_excel.parsear_excel(RUTA_XLSX, "11")
         app.var_ruta.set(RUTA_XLSX)
@@ -1321,7 +1430,8 @@ def main() -> None:
     print("Banco de pruebas del Gestor de Cobranzas")
     print(f"Proyecto: {PROYECTO}")
     for fn in (t_modelos, t_parser_excel, t_parser_pdf, t_mensajes,
-               t_pdf_resumen, t_vendedores, t_whatsapp, t_claude, t_interfaz,
+               t_pdf_resumen, t_vendedores, t_whatsapp, t_whatsapp_web,
+               t_claude, t_interfaz,
                t_trampas):
         seccion(fn)
 

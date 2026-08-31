@@ -32,6 +32,7 @@ import parser_pdf
 import pdf_resumen
 import vendedores as vend_mod
 import whatsapp
+import whatsapp_web
 from config import (
     APP_NOMBRE,
     APP_VERSION,
@@ -510,12 +511,24 @@ class App(tk.Tk):
             fill="x", pady=2
         )
         ttk.Separator(opciones).pack(fill="x", pady=8)
+        self.btn_wa_web = ttk.Button(
+            opciones,
+            text="ENVIAR POR WHATSAPP WEB",
+            command=self._enviar_whatsapp_web,
+        )
+        self.btn_wa_web.pack(fill="x", pady=2)
+        ttk.Label(
+            opciones,
+            text="El de escanear el QR. Deja cada\nmensaje listo y vos apretas Enviar.",
+            style="Sub.TLabel",
+            justify="left",
+        ).pack(anchor="w", pady=(0, 6))
         self.btn_enviar = ttk.Button(
-            opciones, text="ENVIAR POR WHATSAPP", command=self._enviar
+            opciones, text="Enviar por la API de Meta", command=self._enviar
         )
         self.btn_enviar.pack(fill="x", pady=2)
         ttk.Button(
-            opciones, text="Abrir en WhatsApp Web", command=self._abrir_wa_web
+            opciones, text="Abrir un chat en el navegador", command=self._abrir_wa_web
         ).pack(fill="x", pady=2)
         ttk.Button(
             opciones, text="Abrir carpeta de resumenes", command=self._abrir_carpeta
@@ -743,7 +756,7 @@ class App(tk.Tk):
         estado = "disabled" if bloquear else "normal"
         for btn in (
             self.btn_leer, self.btn_claude, self.btn_verificar,
-            self.btn_telefonos, self.btn_enviar,
+            self.btn_telefonos, self.btn_enviar, self.btn_wa_web,
         ):
             try:
                 btn.configure(state=estado)
@@ -1806,6 +1819,111 @@ class App(tk.Tk):
 
         self._en_hilo(trabajo, al_terminar, "Enviando por WhatsApp...")
 
+
+    # ------------------------------------------------------------------
+    # ENVIO ASISTIDO POR WHATSAPP WEB (el de escanear el QR)
+    # ------------------------------------------------------------------
+    def _barreras_de_envio(self, destinos: list, como: str) -> bool:
+        """Los dos controles previos a cualquier envio, mas la confirmacion."""
+        assert self.reporte is not None
+        problemas = self.reporte.validar()
+        if problemas:
+            muestra = "\n".join(f"  - {p}" for p in problemas[:5])
+            extra = f"\n  ...y {len(problemas) - 5} mas." if len(problemas) > 5 else ""
+            if not messagebox.askyesno(
+                "Los importes no cierran",
+                "ATENCION: la lectura del archivo tiene controles que no "
+                f"coinciden:\n\n{muestra}{extra}\n\n"
+                "Si mandas los mensajes ahora, los vendedores pueden recibir "
+                "importes equivocados.\n\nEnviar igual?",
+                icon="warning",
+                default="no",
+            ):
+                self.libreta.select(self.tab_archivo)
+                return False
+
+        fuera, monto_fuera = self._clientes_excluidos()
+        aviso_filtros = ""
+        if fuera:
+            motivos = self._filtros_activos()
+            aviso_filtros = (
+                f"\nOJO: los filtros de la pestana 'Clientes' dejan afuera "
+                f"{len(fuera)} cliente{'s' if len(fuera) != 1 else ''} por "
+                f"{formatear_pesos(monto_fuera)}, que NO se van a enviar.\n"
+                + (f"Filtros activos: {', '.join(motivos)}.\n" if motivos else "")
+            )
+
+        detalle = "\n".join(
+            f"  - {v.etiqueta()} ({v.telefono}): {len(cs)} clientes, "
+            f"{formatear_pesos(round(sum(c.saldo_total for c in cs), 2))}"
+            for v, cs in destinos
+        )
+        return bool(
+            messagebox.askyesno(
+                "Confirmar envio",
+                f"{como}\n\n{detalle}\n{aviso_filtros}\nConfirmas?",
+            )
+        )
+
+    def _enviar_whatsapp_web(self) -> None:
+        """Prepara los mensajes y abre la ventana que guia el envio asistido."""
+        if not self._hay_reporte():
+            return
+        listo, motivo = whatsapp_web.disponible()
+        if not listo:
+            messagebox.showwarning("No se puede usar WhatsApp Web", motivo)
+            return
+        destinos = self._destinatarios_elegidos()
+        if not destinos:
+            return
+        if not self._barreras_de_envio(
+            destinos, "Se van a preparar los mensajes en WhatsApp Web para:"
+        ):
+            return
+
+        adjuntar_pdf = bool(self.var_e_pdf.get())
+        con_telefonos = bool(self.var_e_telefonos_pdf.get())
+        con_comprobantes = bool(self.var_e_comprobantes.get())
+
+        def trabajo(prog: Callable[[str], None]) -> list:
+            cola: list = []
+            for vendedor, clientes in destinos:
+                ruta_pdf = None
+                if adjuntar_pdf:
+                    prog(f"Generando el PDF de {vendedor.nombre}...")
+                    ok, resultado = self._generar_pdf_para(
+                        vendedor, clientes, con_telefonos
+                    )
+                    if ok:
+                        ruta_pdf = resultado
+                    else:
+                        prog(
+                            f"No se pudo generar el PDF de {vendedor.nombre}: "
+                            f"{resultado}"
+                        )
+                partes = self._armar_partes(vendedor, clientes, con_comprobantes)
+                epigrafe = mensajes.epigrafe_pdf(
+                    self.reporte, clientes, vendedor.nombre  # type: ignore[arg-type]
+                )
+                cola.extend(
+                    whatsapp_web.armar_pasos(
+                        vendedor.etiqueta(),
+                        vendedor.telefono,
+                        partes,
+                        ruta_pdf,
+                        epigrafe,
+                    )
+                )
+            return cola
+
+        def al_terminar(cola: list) -> None:
+            if not cola:
+                messagebox.showinfo("Nada para enviar", "No quedo ningun mensaje.")
+                return
+            VentanaEnvioAsistido(self, cola, destinos)
+
+        self._en_hilo(trabajo, al_terminar, "Preparando los mensajes...")
+
     def _registrar_historial(
         self, vendedor: vend_mod.Vendedor, clientes: list[Cliente], ok: bool
     ) -> None:
@@ -1988,6 +2106,256 @@ class App(tk.Tk):
             self.libreta.select(self.tab_archivo)
             return False
         return True
+
+
+
+# ==========================================================================
+# VENTANA DEL ENVIO ASISTIDO POR WHATSAPP WEB
+# ==========================================================================
+class VentanaEnvioAsistido(tk.Toplevel):
+    """Guia el envio mensaje por mensaje.
+
+    El programa deja cada mensaje escrito y el PDF adjunto en WhatsApp Web, y
+    se detiene. El boton Enviar lo aprieta la persona: automatizar tambien ese
+    click va contra los terminos de WhatsApp y expone el numero al bloqueo.
+
+    Cada accion sobre el navegador corre en su propio hilo, con su propia cola,
+    para no congelar ni esta ventana ni la principal.
+    """
+
+    def __init__(self, padre: "App", cola: list, destinos: list) -> None:
+        super().__init__(padre)
+        self.padre = padre
+        self.cola = cola
+        self.destinos = destinos
+        self.indice = -1
+        self.sesion = whatsapp_web.Sesion()
+        self.mensajes: queue.Queue[tuple[str, Any]] = queue.Queue()
+        self.resultado: dict[str, bool] = {}
+        self.terminado = False
+
+        self.title("Enviar por WhatsApp Web")
+        self.geometry("620x430")
+        self.transient(padre)
+        self.protocol("WM_DELETE_WINDOW", self._cerrar)
+
+        cuerpo = ttk.Frame(self, padding=14)
+        cuerpo.pack(fill="both", expand=True)
+
+        self.var_titulo = tk.StringVar(value="Abriendo WhatsApp Web...")
+        ttk.Label(cuerpo, textvariable=self.var_titulo, style="Titulo.TLabel").pack(
+            anchor="w"
+        )
+        self.var_detalle = tk.StringVar(value="")
+        ttk.Label(cuerpo, textvariable=self.var_detalle, style="Total.TLabel").pack(
+            anchor="w", pady=(4, 0)
+        )
+        self.var_instruccion = tk.StringVar(
+            value=(
+                "Si es la primera vez, escanea el codigo QR con el telefono:\n"
+                "WhatsApp > Dispositivos vinculados > Vincular un dispositivo.\n"
+                "La sesion queda guardada para las proximas veces."
+            )
+        )
+        ttk.Label(
+            cuerpo,
+            textvariable=self.var_instruccion,
+            style="Sub.TLabel",
+            justify="left",
+            wraplength=580,
+        ).pack(anchor="w", pady=(8, 6))
+
+        self.barra = ttk.Progressbar(cuerpo, mode="indeterminate", length=580)
+        self.barra.pack(fill="x", pady=(0, 8))
+
+        marco = ttk.LabelFrame(cuerpo, text="Registro", padding=6)
+        marco.pack(fill="both", expand=True)
+        self.txt = tk.Text(marco, height=8, wrap="word", font=("Consolas", 9))
+        scroll = ttk.Scrollbar(marco, command=self.txt.yview)
+        self.txt.configure(yscrollcommand=scroll.set, state="disabled")
+        self.txt.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        botones = ttk.Frame(cuerpo)
+        botones.pack(fill="x", pady=(10, 0))
+        self.btn_principal = ttk.Button(
+            botones, text="Empezar", command=self._siguiente, state="disabled"
+        )
+        self.btn_principal.pack(side="left")
+        self.btn_saltear = ttk.Button(
+            botones, text="Saltear este", command=self._saltear, state="disabled"
+        )
+        self.btn_saltear.pack(side="left", padx=6)
+        ttk.Button(botones, text="Terminar", command=self._cerrar).pack(side="right")
+
+        self.after(120, self._procesar)
+        self._trabajar(
+            lambda prog: (self.sesion.abrir(prog), self.sesion.esperar_sesion(prog)),
+            "Abriendo WhatsApp Web...",
+            self._sesion_lista,
+        )
+
+    # ------------------------------------------------------------------
+    # HILOS
+    # ------------------------------------------------------------------
+    def _trabajar(
+        self,
+        trabajo: Callable[[Callable[[str], None]], Any],
+        etiqueta: str,
+        al_terminar: Callable[[], None] | None = None,
+    ) -> None:
+        self._botones(False)
+        self.var_titulo.set(etiqueta)
+        self.barra.start(12)
+
+        def correr() -> None:
+            try:
+                trabajo(self._progreso)
+                self.mensajes.put(("ok", al_terminar))
+            except Exception as e:  # noqa: BLE001
+                log_error(f"Envio asistido: {e}\n{traceback.format_exc()}")
+                self.mensajes.put(("error", e))
+
+        threading.Thread(target=correr, daemon=True).start()
+
+    def _progreso(self, texto: str) -> None:
+        self.mensajes.put(("progreso", texto))
+
+    def _procesar(self) -> None:
+        try:
+            while True:
+                tipo, dato = self.mensajes.get_nowait()
+                if tipo == "progreso":
+                    self._log(str(dato))
+                elif tipo == "ok":
+                    self.barra.stop()
+                    if dato:
+                        dato()
+                elif tipo == "error":
+                    self.barra.stop()
+                    self._log(f"ERROR: {dato}")
+                    self._botones(True)
+                    self.var_titulo.set("Se corto el paso")
+                    self.var_instruccion.set(
+                        "Podes saltear este mensaje y seguir, o terminarlo a mano "
+                        "en Chrome."
+                    )
+                    messagebox.showerror("WhatsApp Web", str(dato), parent=self)
+        except queue.Empty:
+            pass
+        if not self.terminado:
+            self.after(120, self._procesar)
+
+    def _botones(self, habilitar: bool) -> None:
+        estado = "normal" if habilitar else "disabled"
+        for b in (self.btn_principal, self.btn_saltear):
+            try:
+                b.configure(state=estado)
+            except tk.TclError:
+                pass
+
+    def _log(self, texto: str) -> None:
+        self.txt.configure(state="normal")
+        self.txt.insert("end", f"[{hora_arg():%H:%M:%S}] {texto}\n")
+        self.txt.see("end")
+        self.txt.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # FLUJO
+    # ------------------------------------------------------------------
+    def _sesion_lista(self) -> None:
+        self._log(f"Sesion lista. Hay {len(self.cola)} mensaje(s) para preparar.")
+        self.var_titulo.set("Sesion de WhatsApp Web lista")
+        self.var_instruccion.set(
+            "Apreta Empezar. El programa va a dejar cada mensaje escrito y el PDF "
+            "adjunto; vos revisas y apretas Enviar en Chrome."
+        )
+        self._botones(True)
+        self.btn_saltear.configure(state="disabled")
+
+    def _siguiente(self) -> None:
+        """Marca el actual como enviado y prepara el que sigue."""
+        if 0 <= self.indice < len(self.cola):
+            paso = self.cola[self.indice]
+            self.resultado.setdefault(paso.vendedor, True)
+            self._log(f"Enviado: {paso.vendedor} - {paso.descripcion}")
+
+        self.indice += 1
+        if self.indice >= len(self.cola):
+            self._final()
+            return
+        self._preparar_actual()
+
+    def _saltear(self) -> None:
+        if 0 <= self.indice < len(self.cola):
+            paso = self.cola[self.indice]
+            self.resultado[paso.vendedor] = False
+            self._log(f"SALTEADO: {paso.vendedor} - {paso.descripcion}")
+        self.indice += 1
+        if self.indice >= len(self.cola):
+            self._final()
+            return
+        self._preparar_actual()
+
+    def _preparar_actual(self) -> None:
+        paso = self.cola[self.indice]
+        self.var_detalle.set(
+            f"{self.indice + 1} de {len(self.cola)}  -  {paso.vendedor}"
+        )
+        self._trabajar(
+            lambda prog: self.sesion.preparar(paso, prog),
+            f"Preparando: {paso.descripcion}",
+            self._listo_para_enviar,
+        )
+
+    def _listo_para_enviar(self) -> None:
+        paso = self.cola[self.indice]
+        self.var_titulo.set(paso.descripcion)
+        self.var_instruccion.set(
+            "Anda a Chrome: el mensaje ya esta escrito"
+            + (" y el PDF adjunto" if paso.tipo == "documento" else "")
+            + ".\nRevisalo, apreta Enviar ahi, y despues volve aca y toca "
+            "'Ya lo mande'."
+        )
+        self.btn_principal.configure(
+            text="Ya lo mande - siguiente"
+            if self.indice < len(self.cola) - 1
+            else "Ya lo mande - terminar"
+        )
+        self._botones(True)
+        self._log(f"Listo para enviar: {paso.vendedor} - {paso.descripcion}")
+
+    def _final(self) -> None:
+        self.var_titulo.set("Listo")
+        self.var_detalle.set("")
+        self.var_instruccion.set("No quedan mensajes por preparar.")
+        self.btn_principal.configure(text="Cerrar", command=self._cerrar)
+        self._botones(True)
+        self.btn_saltear.configure(state="disabled")
+
+        for vendedor, clientes in self.destinos:
+            ok = self.resultado.get(vendedor.etiqueta(), False)
+            self.padre._registrar_historial(vendedor, clientes, ok)
+            self.padre._log(
+                f"{'OK' if ok else 'INCOMPLETO'} - {vendedor.etiqueta()}: "
+                f"{len(clientes)} clientes (WhatsApp Web)"
+            )
+        self._log("Constancia guardada en Historial/envios.csv")
+
+    def _cerrar(self) -> None:
+        if not self.terminado and 0 <= self.indice < len(self.cola):
+            if not messagebox.askyesno(
+                "Cortar el envio",
+                "Quedan mensajes sin preparar. Cerrar igual?",
+                parent=self,
+            ):
+                return
+        self.terminado = True
+        try:
+            self.sesion.cerrar()
+        except Exception:
+            pass
+        self.destroy()
 
 
 # ==========================================================================
