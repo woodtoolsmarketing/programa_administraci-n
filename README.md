@@ -16,6 +16,12 @@ de cuenta por WhatsApp: un PDF con el detalle más un mensaje con el listado.
 
 Para generar el `.exe` distribuible: **`CONSTRUIR_EXE.bat`** (queda en `dist\`).
 
+Para verificar que todo sigue funcionando después de tocar el código:
+**`PROBAR.bat`**. Corre 332 verificaciones sobre los diez módulos en unos
+segundos. No usa internet, no gasta crédito de la API y no manda ningún
+WhatsApp: las llamadas a Meta y a Claude se simulan, y todo lo que el programa
+escribe va a una carpeta temporal del sistema.
+
 ---
 
 ## Cómo se usa
@@ -99,7 +105,7 @@ típico es de centavos de dólar; el botón **Probar Claude** muestra la estimac
 | Límite | Valor | Qué pasa si se supera |
 |---|---|---|
 | Tamaño del PDF | 30 MB | Se rechaza antes de enviar, con mensaje claro. |
-| Salida de la interpretación | 64.000 tokens (~400-600 clientes) | La respuesta se corta. **Se detecta** y se pide exportar el reporte en partes; no se devuelven datos a medias. |
+| Salida de la interpretación | 64.000 tokens (~200 clientes) | La respuesta se corta. **Se detecta** y se pide exportar el reporte en partes; no se devuelven datos a medias. |
 | Entrada del Excel | 1.500.000 caracteres | Se recorta y **se avisa arriba del reporte que faltan clientes**, con el conteo de filas enviadas. |
 | Entrada de la auditoría | 800.000 caracteres | Se recorta y la auditoría **no puede devolver "coincide"**, para no dar falsa tranquilidad. |
 | Teléfonos | se procesan en lotes de 60 clientes | Sin límite práctico. |
@@ -241,3 +247,4 @@ de totales lo detecta y avisa. **Para PDF, el camino recomendado es Claude.**
 | `pdf_resumen.py` | PDF del resumen por vendedor (reportlab). |
 | `vendedores.py` | Vendedores y asignación de clientes. |
 | `interfaz.py` | Ventana Tkinter. Todo lo lento va en un hilo aparte. |
+| `tests/test_cobranzas.py` | Banco de pruebas de los diez módulos. Se corre con `PROBAR.bat`. |
