@@ -12,6 +12,13 @@ openpyxl==3.1.5      # .xlsx / .xlsm
 pdfplumber==0.11.10
 pypdf==6.14.2
 
+# --- OCR local, para los PDF escaneados (sin internet y sin la API) ---
+# Ademas hace falta el motor Tesseract, que NO se instala por pip:
+#   winget install UB-Mannheim.TesseractOCR
+PyMuPDF==1.27.2.3
+pillow==12.2.0
+pytesseract==0.3.13
+
 # --- generacion de PDF ---
 reportlab==5.0.0
 

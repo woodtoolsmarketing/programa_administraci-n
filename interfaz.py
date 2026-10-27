@@ -805,7 +805,7 @@ class App(tk.Tk):
                         return claude_api.interpretar_pdf(ruta, progreso=prog)
                     except claude_api.ErrorClaude as e:
                         prog("Claude no pudo: se intenta con el lector propio...")
-                        rep = parser_pdf.parsear_pdf(ruta, area)
+                        rep = parser_pdf.parsear_pdf(ruta, area, progreso=prog)
                         rep.avisos.insert(
                             0,
                             f"No se pudo usar Claude para este PDF: {e}\n"
@@ -815,7 +815,7 @@ class App(tk.Tk):
                         return rep
 
                 prog("Leyendo el PDF...")
-                rep = parser_pdf.parsear_pdf(ruta, area)
+                rep = parser_pdf.parsear_pdf(ruta, area, progreso=prog)
                 if not rep.clientes:
                     rep.avisos.append(
                         "Configura la API key de Claude para interpretar PDF con "

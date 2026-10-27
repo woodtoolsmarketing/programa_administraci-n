@@ -12,6 +12,9 @@ de cuenta por WhatsApp: un PDF con el detalle más un mensaje con el listado.
 1. Instalar Python desde [python.org](https://www.python.org/downloads/),
    tildando **"Add Python to PATH"**.
 2. Doble clic en **`INSTALAR.bat`** (crea el entorno e instala las librerías).
+   - Opcional, solo si vas a leer **PDF escaneados**: instalá el motor de OCR
+     con `winget install UB-Mannheim.TesseractOCR` en una consola. Es gratis,
+     se instala una vez y funciona sin internet.
 3. Doble clic en **`ABRIR_PROGRAMA.bat`**.
 
 Para generar el `.exe` distribuible: **`CONSTRUIR_EXE.bat`** (queda en `dist\`).
@@ -31,9 +34,12 @@ Elegís el archivo y apretás **Leer el archivo**.
 
 - **Excel (`.xls` / `.xlsx`)** → lo lee el parser propio: es exacto, instantáneo
   y gratis. **Detecta lo que marcaste en amarillo.**
-- **PDF** → lo interpreta la **API de Claude**, que lee el documento completo
-  (incluso escaneado). Si no hay API key configurada, intenta un parseo propio
-  por patrones de texto, que es mucho menos confiable.
+- **PDF con texto** → lo lee el parser propio. Verificado contra un reporte
+  real: 12 clientes, descuadre $0,00.
+- **PDF escaneado** (una foto de la hoja, sin texto adentro) → se detecta solo
+  y se lee con **OCR local**, en tu propia PC, sin internet y sin la API.
+- **Interpretar con Claude** queda como tercer camino, para cuando el ERP
+  cambia el formato y el parser propio ya no entiende la estructura.
 
 Siempre se controla que **la suma de los comprobantes de cada cliente coincida
 con su fila "Total cliente"**, y que la suma de los clientes coincida con el
@@ -262,6 +268,31 @@ es correcta.
 real a Meta fue ejecutada**. La primera vez conviene probar con **un solo
 vendedor**.
 
+### El OCR de PDF escaneados
+
+Medido contra un escaneo fabricado a partir de un reporte real de 2 páginas:
+
+| | Resultado |
+|---|---|
+| Clientes detectados | 12 de 12 |
+| Comprobantes | 26 de 26 |
+| Clientes con el saldo **exacto** | **12 de 12** |
+| Suma de comprobantes | idéntica al centavo |
+| Tiempo | ~5 s (2,5 s por página) |
+
+**Lo que sí falla:** las filas `Total cliente` y `Total general`. El OCR pierde
+la coma decimal y las lee como números mil veces más grandes. Eso hace que el
+control de totales marque diferencias **aunque los comprobantes estén bien**.
+
+No se corrige automáticamente a propósito: adivinar dónde iba una coma en un
+importe es exactamente lo que no hay que hacer con plata. El programa avisa que
+el archivo se leyó con OCR y deja que el control grite, así nadie manda números
+sin mirarlos.
+
+**En resumen:** con un PDF escaneado el OCR te da un borrador correcto, pero
+hay que comparar los totales contra el papel antes de enviar. Si querés que el
+programa se valide solo, ese es el caso donde conviene la API.
+
 **El parseo determinístico de PDF es best-effort.** Los PDF no tienen columnas
 de verdad, así que si el reporte se exportó partido en varias páginas los
 importes pueden quedar separados de su comprobante. Cuando eso pasa el control
@@ -276,7 +307,7 @@ de totales lo detecta y avisa. **Para PDF, el camino recomendado es Claude.**
 | `modelos.py` | `Reporte` / `Cliente` / `Comprobante`, cálculo de saldos y estados, formato de pesos y normalización de teléfonos argentinos. Es el contrato común. |
 | `config.py` | Configuración, rutas persistentes (compatibles con PyInstaller) y log. |
 | `parser_excel.py` | Lector determinístico de `.xls` / `.xlsx`, **con colores de relleno**. |
-| `parser_pdf.py` | Extracción de texto de PDF y parseo best-effort. |
+| `parser_pdf.py` | Extracción de texto de PDF, OCR local para escaneos, y parseo best-effort. |
 | `claude_api.py` | API de Claude: interpretación, auditoría, teléfonos y redacción. |
 | `whatsapp.py` | Cloud API de Meta, con los errores traducidos al castellano. |
 | `whatsapp_web.py` | Envío asistido por WhatsApp Web (QR), con Selenium. Prepara el mensaje; nunca lo envía solo. |

@@ -159,6 +159,159 @@ def volcar_para_claude(ruta: str, max_paginas: int | None = None) -> str:
     return "\n".join(encabezado) + "\n\n" + extraer_texto(ruta, max_paginas)
 
 
+
+# ==========================================================================
+# OCR LOCAL (para los PDF que son una imagen escaneada)
+# ==========================================================================
+# Un PDF escaneado no tiene texto adentro: es una foto de la hoja. El lector
+# normal no saca nada. Esto lo resuelve en la propia PC, sin internet y sin la
+# API: se dibuja cada pagina como imagen y se la pasa por Tesseract.
+_RUTAS_TESSERACT = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+DPI_OCR = 400            # medido: a 300 se pierden mas comas decimales;
+                         # arriba de 400 no mejora y solo tarda mas
+MINIMO_TEXTO_REAL = 200  # menos caracteres que esto, es un escaneo
+
+
+def _ruta_tesseract() -> str:
+    """Donde esta el ejecutable de Tesseract, o cadena vacia."""
+    import shutil
+
+    ruta = shutil.which("tesseract")
+    if ruta:
+        return ruta
+    for candidata in _RUTAS_TESSERACT:
+        if os.path.isfile(candidata):
+            return candidata
+    return ""
+
+
+def ocr_disponible() -> tuple[bool, str]:
+    """(se puede usar OCR, motivo si no). No procesa nada: solo revisa."""
+    try:
+        import fitz  # noqa: F401  (PyMuPDF, dibuja las paginas)
+    except ImportError:
+        return False, (
+            "Falta la libreria PyMuPDF, que dibuja las paginas del PDF.\n"
+            "Instalala con:  pip install pymupdf\n(o volve a correr INSTALAR.bat)"
+        )
+    try:
+        import pytesseract  # noqa: F401
+    except ImportError:
+        return False, (
+            "Falta la libreria pytesseract.\n"
+            "Instalala con:  pip install pytesseract\n(o volve a correr INSTALAR.bat)"
+        )
+    if not _ruta_tesseract():
+        return False, (
+            "No esta instalado Tesseract, que es el motor de OCR.\n\n"
+            "Instalalo con este comando en una consola:\n"
+            "    winget install UB-Mannheim.TesseractOCR\n\n"
+            "Es gratis, se instala una sola vez y funciona sin internet."
+        )
+    return True, ""
+
+
+def _idioma_ocr() -> str:
+    """'spa' si esta el paquete de espanol instalado; si no, 'eng'.
+
+    Para este reporte la diferencia es chica: son mayusculas, numeros y fechas.
+    El espanol ayuda solo con los acentos de las razones sociales.
+    """
+    import subprocess
+
+    exe = _ruta_tesseract()
+    if not exe:
+        return "eng"
+    try:
+        salida = subprocess.run(
+            [exe, "--list-langs"],
+            capture_output=True, text=True, timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        idiomas = (salida.stdout or "").split()
+        return "spa" if "spa" in idiomas else "eng"
+    except Exception:
+        return "eng"
+
+
+def extraer_texto_ocr(
+    ruta: str,
+    max_paginas: int | None = None,
+    dpi: int = DPI_OCR,
+    progreso: Any = None,
+) -> str:
+    """Texto de un PDF escaneado, leyendo la IMAGEN de cada pagina.
+
+    Devuelve el mismo formato que extraer_texto(), con cada pagina precedida
+    por '### PAGINA n', para que el resto del parser no note la diferencia.
+
+    Es lento: unos segundos por pagina. No usa internet ni la API.
+    """
+    listo, motivo = ocr_disponible()
+    if not listo:
+        raise ErrorPDF(motivo)
+
+    import io as _io
+
+    import fitz
+    import pytesseract
+    from PIL import Image
+
+    exe = _ruta_tesseract()
+    if exe:
+        pytesseract.pytesseract.tesseract_cmd = exe
+    idioma = _idioma_ocr()
+
+    partes: list[str] = []
+    try:
+        documento = fitz.open(ruta)
+    except Exception as e:
+        raise ErrorPDF(f"No se pudo abrir el PDF para el OCR: {e}")
+
+    try:
+        total = documento.page_count
+        limite = total if max_paginas is None else min(total, max_paginas)
+        for i in range(limite):
+            if progreso:
+                try:
+                    progreso(f"Leyendo con OCR la pagina {i + 1} de {limite}...")
+                except Exception:
+                    pass
+            try:
+                pagina = documento.load_page(i)
+                imagen = Image.open(_io.BytesIO(pagina.get_pixmap(dpi=dpi).tobytes("png")))
+                # psm 6: la hoja es un bloque de texto en columnas, no prosa
+                texto = pytesseract.image_to_string(
+                    imagen, lang=idioma, config="--psm 6"
+                )
+            except Exception as e:
+                log_error(f"OCR fallo en la pagina {i + 1}: {e}")
+                texto = ""
+            partes.append(f"### PAGINA {i + 1}\n{texto}")
+    finally:
+        try:
+            documento.close()
+        except Exception:
+            pass
+
+    log(f"OCR ({idioma}, {dpi} dpi): {limite} paginas de {os.path.basename(ruta)}")
+    return "\n".join(partes)
+
+
+def extraer_lineas_ocr(ruta: str, progreso: Any = None) -> list[str]:
+    """Lineas de texto de un PDF escaneado, listas para el parser."""
+    texto = extraer_texto_ocr(ruta, progreso=progreso)
+    salida: list[str] = []
+    for linea in texto.splitlines():
+        limpia = linea.rstrip()
+        if not limpia.strip() or limpia.startswith("### PAGINA"):
+            continue
+        salida.append(limpia)
+    return salida
+
 # ==========================================================================
 # CONVERSION DE NUMEROS EN FORMATO ARGENTINO
 # ==========================================================================
@@ -302,11 +455,14 @@ def _fecha_de(texto: str) -> date | None:
 # ==========================================================================
 # PARSER DETERMINISTICO
 # ==========================================================================
-def parsear_pdf(ruta: str, area_telefono_defecto: str = "11") -> Reporte:
+def parsear_pdf(
+    ruta: str, area_telefono_defecto: str = "11", progreso: Any = None
+) -> Reporte:
     """Intenta leer el reporte del PDF por patrones de texto.
 
-    Si no reconoce clientes, devuelve el Reporte vacio con un aviso pidiendo
-    usar la interpretacion con Claude.
+    Si el PDF es un escaneo -una foto de la hoja, sin texto adentro- se lee con
+    OCR local antes de parsear. Si aun asi no reconoce clientes, devuelve el
+    Reporte vacio con un aviso pidiendo usar la interpretacion con Claude.
     """
     reporte = Reporte(origen_archivo=ruta, motor="pdf")
 
@@ -314,12 +470,40 @@ def parsear_pdf(ruta: str, area_telefono_defecto: str = "11") -> Reporte:
         lineas = extraer_lineas(ruta)
     except ErrorPDF as e:
         reporte.avisos.append(str(e))
-        return reporte
+        lineas = []
+
+    # Casi sin texto: el PDF es un escaneo. Se lee con OCR en esta misma PC,
+    # sin internet y sin la API.
+    if sum(len(l) for l in lineas) < MINIMO_TEXTO_REAL:
+        listo, motivo = ocr_disponible()
+        if listo:
+            try:
+                lineas = extraer_lineas_ocr(ruta, progreso=progreso)
+                reporte.motor = "pdf-ocr"
+                reporte.avisos.append(
+                    "El PDF no traia texto: es un escaneo, y se leyo con OCR "
+                    "local.\n"
+                    "IMPORTANTE: medido contra un escaneo de prueba, los "
+                    "comprobantes salen bien pero las filas 'Total cliente' y "
+                    "'Total general' se leen mal seguido, porque el OCR pierde "
+                    "la coma decimal. Por eso es normal que abajo aparezcan "
+                    "controles que no cierran.\n"
+                    "Eso NO significa que los comprobantes esten mal, pero "
+                    "tampoco se puede dar por buena la lectura sola: hay que "
+                    "comparar los totales contra el papel antes de enviar."
+                )
+            except ErrorPDF as e:
+                reporte.avisos.append(f"No se pudo leer con OCR: {e}")
+        else:
+            reporte.avisos.append(
+                "El PDF no tiene texto extraible (parece un escaneo) y tampoco "
+                "se puede usar el OCR.\n" + motivo
+            )
 
     if not lineas:
         reporte.avisos.append(
-            "El PDF no tiene texto extraible (parece un escaneo). Usa el boton "
-            "'Interpretar con Claude', que lee la imagen del documento."
+            "No se pudo sacar texto del PDF. Si es un escaneo, instala el OCR; "
+            "si no, usa el boton 'Interpretar con Claude'."
         )
         return reporte
 

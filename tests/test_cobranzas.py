@@ -548,6 +548,80 @@ def t_parser_pdf() -> None:
     check("volcado incluye el texto", "ACME HERRAMIENTAS" in volcado)
 
 
+
+# ==========================================================================
+# 3b. OCR LOCAL (PDF escaneados, sin internet y sin la API)
+# ==========================================================================
+def t_ocr() -> None:
+    grupo("3b. parser_pdf.py - OCR local")
+
+    listo, motivo = parser_pdf.ocr_disponible()
+    check("ocr_disponible() devuelve (bool, motivo) sin procesar nada",
+          isinstance(listo, bool) and isinstance(motivo, str))
+    eq("el umbral de 'esto es un escaneo' esta definido",
+       isinstance(parser_pdf.MINIMO_TEXTO_REAL, int), True)
+    check("el OCR corre a 400 dpi (medido: a 300 se pierden mas comas)",
+          parser_pdf.DPI_OCR == 400, str(parser_pdf.DPI_OCR))
+
+    if not listo:
+        print(f"  [SALTEADA ] no hay OCR en esta PC: {motivo.splitlines()[0]}")
+        nota("Tesseract no esta instalado (winget install UB-Mannheim.TesseractOCR)",
+             True)
+        return
+
+    check("encuentra el ejecutable de Tesseract",
+          bool(parser_pdf._ruta_tesseract()), parser_pdf._ruta_tesseract())
+    check("elige un idioma valido", parser_pdf._idioma_ocr() in ("spa", "eng"),
+          parser_pdf._idioma_ocr())
+
+    # --- se fabrica un PDF escaneado a partir del PDF de prueba ------------
+    import fitz
+
+    escaneado = os.path.join(TMP, "LISTADO_ESCANEADO.pdf")
+    origen = fitz.open(RUTA_PDF)
+    destino = fitz.open()
+    for i in range(origen.page_count):
+        pix = origen.load_page(i).get_pixmap(dpi=200)
+        hoja = destino.new_page(width=pix.width * 72 / 200, height=pix.height * 72 / 200)
+        hoja.insert_image(hoja.rect, stream=pix.tobytes("png"))
+    destino.save(escaneado)
+    destino.close()
+    origen.close()
+
+    check("el PDF fabricado no tiene texto adentro",
+          len("".join(parser_pdf.extraer_lineas(escaneado))) < parser_pdf.MINIMO_TEXTO_REAL)
+    check("esta_escaneado() lo reconoce", parser_pdf.esta_escaneado(escaneado))
+
+    # --- se lee con OCR y se compara contra el original --------------------
+    ref = parser_pdf.parsear_pdf(RUTA_PDF, "11")
+    ocr = parser_pdf.parsear_pdf(escaneado, "11")
+
+    eq("el motor queda marcado como OCR", ocr.motor, "pdf-ocr")
+    check("avisa que fue leido con OCR",
+          any("OCR" in a for a in ocr.avisos), str(ocr.avisos[:1]))
+    eq("encuentra los mismos clientes", len(ocr.clientes), len(ref.clientes))
+    eq("encuentra los mismos comprobantes",
+       sum(c.cantidad_comprobantes for c in ocr.clientes),
+       sum(c.cantidad_comprobantes for c in ref.clientes))
+    eq("la suma de los comprobantes coincide al centavo",
+       ocr.saldo_total, ref.saldo_total, tol=0.005)
+
+    por_codigo = {c.codigo_corto: c for c in ocr.clientes}
+    exactos = sum(
+        1 for c in ref.clientes
+        if c.codigo_corto in por_codigo
+        and abs(por_codigo[c.codigo_corto].saldo_total - c.saldo_total) < 0.01
+    )
+    eq("todos los clientes con el saldo exacto", exactos, len(ref.clientes))
+
+    # Lo que SI falla: el OCR pierde la coma decimal en las filas de totales.
+    # No se corrige a mano -seria adivinar con plata-; se deja que el control
+    # lo marque, que es lo que evita mandar numeros mal.
+    nota("el OCR lee mal las filas 'Total cliente' (pierde la coma decimal)",
+         len(ocr.validar()) > 0)
+    check("por eso el programa marca controles que no cierran y no deja enviar "
+          "sin confirmar", len(ocr.validar()) > 0 or ocr.descuadre_general() == 0)
+
 # ==========================================================================
 # 4. MENSAJES
 # ==========================================================================
@@ -1445,7 +1519,7 @@ def t_trampas() -> None:
 def main() -> None:
     print("Banco de pruebas del Gestor de Cobranzas")
     print(f"Proyecto: {PROYECTO}")
-    for fn in (t_modelos, t_parser_excel, t_parser_pdf, t_mensajes,
+    for fn in (t_modelos, t_parser_excel, t_parser_pdf, t_ocr, t_mensajes,
                t_pdf_resumen, t_vendedores, t_whatsapp, t_whatsapp_web,
                t_claude, t_interfaz,
                t_trampas):
